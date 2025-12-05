@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visualiseur CVE - Rimini Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+
+        :root {
+            --rimini-yellow: #FBE700;
+            --rimini-black: #0f172a; /* Plus sombre pour le contraste des graphs */
+            --rimini-text: #E5E7EB;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--rimini-black);
+            color: var(--rimini-text);
+            min-height: 100vh;
+        }
+
+        /* Effets de carte "Glassmorphism" léger pour faire ressortir les graphs */
+        .card-panel {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .text-rimini-yellow { color: var(--rimini-yellow); }
+        .bg-rimini-yellow { background-color: var(--rimini-yellow); }
+        .border-rimini-yellow { border-color: var(--rimini-yellow); }
+
+        /* Animation d'apparition */
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .fade-in { animation: fadeIn 0.6s ease-out forwards; }
+
+        @media print {
+            body { background-color: white !important; color: black !important; }
+            .no-print { display: none !important; }
+            .card-panel { background: white !important; border: 1px solid #ddd !important; color: black !important; }
+            canvas { max-height: 300px !important; }
+        }
+    </style>
+</head>
+
+<body class="p-4 sm:p-8">
+
+    <header class="mb-10 no-print flex flex-col md:flex-row items-center justify-between gap-4">
+    <div>
+        <h1 class="text-4xl sm:text-5xl font-extrabold tracking-tight text-white mb-2">
+            CVE <span class="text-rimini-yellow">Rimini Visualizer</span>
+        </h1>
+        <p class="text-xl text-gray-400">Security Intelligence Dashboard</p>
+    </div>
+
+    <a href="Threat_Risk_Scatter.html" class="flex items-center gap-3 px-5 py-3 rounded-xl bg-slate-800 border border-slate-600 hover:border-rimini-yellow transition-all group text-decoration-none">
+        <div class="text-right hidden sm:block">
+            <p class="text-xs text-gray-400 uppercase font-bold">Threat Risk Scatter</p>
+            <p class="text-sm font-bold text-white">Compare CVES.</p>
+        </div>
+        <div class="bg-slate-700 p-2 rounded-lg group-hover:bg-rimini-yellow group-hover:text-black transition-colors">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
+        </div>
+    </a>
+    </header>
+
+    <div class="no-print card-panel p-6 rounded-2xl shadow-xl mb-10">
+        <h2 class="text-xl font-semibold mb-4 text-white">Recherche de Vulnérabilité</h2>
+        <div class="flex flex-col sm:flex-row gap-4">
+            <input type="text" id="cveInput" placeholder="Ex: CVE-2021-44228, CVE-2023-23397"
+                   class="flex-grow p-4 rounded-xl border border-gray-600 focus:border-rimini-yellow focus:ring-1 focus:ring-rimini-yellow bg-slate-800 text-white placeholder-gray-400 font-mono text-lg transition-all">
+            <button id="analyzeBtn"
+                    class="bg-rimini-yellow text-slate-900 font-bold py-3 px-8 rounded-xl transition hover:bg-yellow-400 hover:shadow-[0_0_20px_rgba(251,231,0,0.3)] active:scale-95 text-lg">
+                Analyser
+            </button>
+        </div>
+    </div>
+
+    <div id="statusMessage" class="text-center text-xl font-medium mb-6 hidden"></div>
+    <div id="loadingIndicator" class="text-center mb-10 hidden">
+        <div class="relative w-16 h-16 mx-auto">
+            <div class="absolute inset-0 rounded-full border-4 border-slate-700"></div>
+            <div class="absolute inset-0 rounded-full border-4 border-rimini-yellow border-t-transparent animate-spin"></div>
+        </div>
+        <p class="mt-4 text-gray-400 animate-pulse">Analyse des vecteurs d'attaque & KEV...</p>
+    </div>
+
+    <div id="resultsContainer" class="hidden">
+        <button id="pdfBtn" class="no-print bg-slate-700 hover:bg-slate-600 text-white font-medium py-2 px-4 rounded-lg mb-8 transition flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path></svg>
+            Exporter le rapport
+        </button>
+
+        <div id="cveResult" class="space-y-16"></div>
+    </div>
+
+    <script type="module">
+        // --- CONFIG ---
+        const cveInput = document.getElementById('cveInput');
+        const analyzeBtn = document.getElementById('analyzeBtn');
+        const pdfBtn = document.getElementById('pdfBtn');
+        const statusMessage = document.getElementById('statusMessage');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const resultsContainer = document.getElementById('resultsContainer');
+        const cveResultDiv = document.getElementById('cveResult');
+
+        // --- UTILS ---
+        async function retryFetch(url, retries = 2) {
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const res = await fetch(url);
+                    if (res.status === 404) return null;
+                    if (!res.ok) throw new Error(res.status);
+                    return await res.json();
+                } catch (e) {
+                    if (i === retries - 1) return null;
+                    await new Promise(r => setTimeout(r, 800));
+                }
+            }
+        }
+
+        // --- PARSING INTELLIGENT ---
+        
+        // Transforme le vecteur CVSS (ex: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H) en données chiffrées pour le Radar Chart
+        function parseCvssVectorToData(vectorStr) {
+            // Valeurs par défaut (Risque max)
+            const data = { AV: 10, AC: 10, PR: 10, UI: 10, S: 5, C: 10, I: 10, A: 10 };
+            
+            if (!vectorStr) return data;
+
+            // Mapping simple pour visualiser le "niveau de danger" de chaque composant
+            // 10 = Le plus dangereux/facile à exploiter, 0 = Pas d'impact
+            const map = {
+                // Attack Vector: Network=10, Adj=7, Local=4, Phys=1
+                'AV:N': 10, 'AV:A': 7, 'AV:L': 4, 'AV:P': 1,
+                // Complexity: Low=10 (Facile), High=4 (Difficile)
+                'AC:L': 10, 'AC:H': 4,
+                // Privileges: None=10, Low=7, High=2
+                'PR:N': 10, 'PR:L': 7, 'PR:H': 2,
+                // User Interaction: None=10, Required=4
+                'UI:N': 10, 'UI:R': 4,
+                // Scope: Changed=10 (Pire), Unchanged=5
+                'S:C': 10, 'S:U': 5,
+                // CIA Impact: High=10, Low=5, None=0
+                'C:H': 10, 'C:L': 5, 'C:N': 0,
+                'I:H': 10, 'I:L': 5, 'I:N': 0,
+                'A:H': 10, 'A:L': 5, 'A:N': 0
+            };
+
+            const parts = vectorStr.split('/');
+            parts.forEach(part => {
+                if(map[part] !== undefined) {
+                    const key = part.split(':')[0];
+                    data[key] = map[part];
+                }
+            });
+            return data;
+        }
+
+        function extractKevFromNvd(cveItem, cveId) {
+            const cveData = cveItem.cve;
+            if (cveData.cisaExploitAdd) {
+                let vendor = "N/A", product = "N/A";
+                try {
+                    const match = cveData.configurations?.[0]?.nodes?.[0]?.cpeMatch?.[0]?.criteria;
+                    if(match) {
+                        const p = match.split(':');
+                        if(p.length >= 5) {
+                            vendor = p[3].replace(/_/g, ' ');
+                            product = p[4].replace(/_/g, ' ');
+                            vendor = vendor.charAt(0).toUpperCase() + vendor.slice(1);
+                            product = product.charAt(0).toUpperCase() + product.slice(1);
+                        }
+                    }
+                } catch(e){}
+
+                return {
+                    cveID: cveId,
+                    vendorProject: vendor,
+                    product: product,
+                    vulnerabilityName: cveData.cisaVulnerabilityName || "Vulnerability identified by CISA",
+                    dateAdded: cveData.cisaExploitAdd,
+                    dueDate: cveData.cisaActionDue || "Immediate",
+                    shortDescription: cveData.descriptions.find(d => d.lang === 'en')?.value || "",
+                    requiredAction: cveData.cisaRequiredAction || "Apply mitigations.",
+                    cwes: (cveData.weaknesses || []).map(w => w.description?.[0]?.value || w.cweId)
+                };
+            }
+            return null;
+        }
+
+        async function fetchVulnerabilityData(cveId) {
+            const [nvd, epss] = await Promise.all([
+                retryFetch(`https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=${cveId}`),
+                retryFetch(`https://api.first.org/data/v1/epss?cve=${cveId}`)
+            ]);
+
+            if (!nvd?.vulnerabilities?.length) return { cveId, error: "Introuvable dans NVD" };
+
+            const item = nvd.vulnerabilities[0];
+            const metrics = item.cve.metrics?.cvssMetricV31?.[0] || item.cve.metrics?.cvssMetricV30?.[0];
+            
+            return {
+                cveId,
+                description: item.cve.descriptions.find(d => d.lang === 'en')?.value,
+                kev: extractKevFromNvd(item, cveId),
+                epss: {
+                    score: parseFloat(epss?.data?.[0]?.epss || 0),
+                    percentile: parseFloat(epss?.data?.[0]?.percentile || 0)
+                },
+                cvss: {
+                    score: metrics?.cvssData?.baseScore || 0,
+                    vectorStr: metrics?.cvssData?.vectorString || "",
+                    vectorData: parseCvssVectorToData(metrics?.cvssData?.vectorString)
+                },
+                cwe: item.cve.weaknesses?.[0]?.description?.find(d => d.lang === 'en')?.value || item.cve.weaknesses?.[0]?.cweId || "N/A",
+                affected: (item.cve.configurations || []).flatMap(c => c.nodes.flatMap(n => n.cpeMatch.map(m => {
+                    const p = m.criteria.split(':');
+                    return { vendor: p[3]||'?', product: p[4]||'?', version: m.versionEndIncluding ? `<= ${m.versionEndIncluding}` : (m.versionStartIncluding ? `>= ${m.versionStartIncluding}` : 'All/Specific') };
+                }))).slice(0, 15) // Limit to 15 to avoid UI explode
+            };
+        }
+
+        // --- RENDERING CHARTS ---
+
+        function createRadarChart(canvasId, data) {
+            const ctx = document.getElementById(canvasId).getContext('2d');
+            new Chart(ctx, {
+                type: 'radar',
+                data: {
+                    labels: ['Network (AV)', 'Low Complexity (AC)', 'No Privs (PR)', 'No User Interaction (UI)', 'Scope Change (S)', 'Confidentiality (C)', 'Integrity (I)', 'Availability (A)'],
+                    datasets: [{
+                        label: 'Surface d\'Attaque & Impact',
+                        data: [data.AV, data.AC, data.PR, data.UI, data.S, data.C, data.I, data.A],
+                        backgroundColor: 'rgba(251, 231, 0, 0.2)', // Rimini Yellow transparent
+                        borderColor: '#FBE700',
+                        pointBackgroundColor: '#fff',
+                        pointBorderColor: '#FBE700',
+                        pointHoverBackgroundColor: '#fff',
+                        pointHoverBorderColor: '#FBE700'
+                    }]
+                },
+                options: {
+                    scales: {
+                        r: {
+                            angleLines: { color: 'rgba(255, 255, 255, 0.1)' },
+                            grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                            pointLabels: { color: '#94a3b8', font: {size: 11} },
+                            suggestedMin: 0,
+                            suggestedMax: 10,
+                            ticks: { display: false } // Cache les chiffres 0-10, on veut juste la forme
+                        }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+
+        function createEpssGauge(canvasId, score) {
+            const ctx = document.getElementById(canvasId).getContext('2d');
+            const percentage = (score * 100).toFixed(1);
+            // Color logic: Green < 20%, Yellow < 60%, Red > 60%
+            let color = '#22c55e';
+            if(score > 0.2) color = '#f59e0b';
+            if(score > 0.6) color = '#ef4444';
+
+            new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Risque', 'Reste'],
+                    datasets: [{
+                        data: [score, 1 - score],
+                        backgroundColor: [color, 'rgba(255,255,255,0.05)'],
+                        borderWidth: 0,
+                        circumference: 180,
+                        rotation: 270,
+                    }]
+                },
+                options: {
+                    cutout: '75%',
+                    plugins: { legend: { display: false }, tooltip: { enabled: false } }
+                }
+            });
+            // Overlay text manually in HTML
+        }
+
+        // --- HTML TEMPLATES ---
+
+        function renderKev(kev) {
+            if(!kev) return '';
+            
+            // Calcul du temps restant ou écoulé
+            const added = new Date(kev.dateAdded);
+            const due = new Date(kev.dueDate);
+            const today = new Date();
+            const total = due - added;
+            const elapsed = today - added;
+            let percent = Math.min(100, Math.max(0, (elapsed / total) * 100));
+            
+            const isOverdue = today > due;
+            const statusText = isOverdue ? "OVERDUE (Date limite dépassée)" : "Correction Requise";
+            const barColor = isOverdue ? "bg-red-600" : "bg-rimini-yellow";
+
+            return `
+                <div class="col-span-12 fade-in">
+                    <div class="relative overflow-hidden rounded-2xl border-2 border-red-500 bg-gradient-to-br from-red-950/80 to-slate-900 p-6 shadow-[0_0_40px_rgba(220,38,38,0.2)]">
+                        <div class="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-red-600 blur-[80px] opacity-20"></div>
+                        
+                        <div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 relative z-10">
+                            <div class="flex items-center gap-4">
+                                <div class="bg-red-500/20 p-3 rounded-lg border border-red-500/50 text-red-400">
+                                    <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                                </div>
+                                <div>
+                                    <h3 class="text-2xl font-bold text-white">CISA KEV ALERT</h3>
+                                    <p class="text-red-300 font-medium">Vulnérabilité Activement Exploitée</p>
+                                </div>
+                            </div>
+                            <div class="mt-4 md:mt-0 text-right">
+                                <p class="text-sm text-red-200 uppercase tracking-widest font-bold">Produit Cible</p>
+                                <p class="text-2xl text-white font-bold">${kev.vendorProject} ${kev.product}</p>
+                            </div>
+                        </div>
+
+                        <div class="mb-6 bg-black/40 p-4 rounded-xl border border-red-500/20 relative">
+                            <div class="flex justify-between text-xs text-gray-400 mb-2 font-mono uppercase">
+                                <span>Ajouté le: ${kev.dateAdded}</span>
+                                <span class="${isOverdue ? 'text-red-500 font-bold' : 'text-rimini-yellow'}">Deadline: ${kev.dueDate}</span>
+                            </div>
+                            <div class="h-4 bg-gray-700 rounded-full overflow-hidden relative">
+                                <div class="h-full ${barColor} transition-all duration-1000 ease-out" style="width: ${percent}%"></div>
+                            </div>
+                            <p class="text-center mt-2 font-bold text-sm ${isOverdue ? 'text-red-500' : 'text-rimini-yellow'}">
+                                ${statusText}
+                            </p>
+                        </div>
+
+                        <div class="grid md:grid-cols-2 gap-6 text-sm">
+                            <div>
+                                <p class="text-red-300 font-bold uppercase mb-1">Action Requise</p>
+                                <p class="text-white bg-red-900/30 p-3 rounded border border-red-800">${kev.requiredAction}</p>
+                            </div>
+                            <div>
+                                <p class="text-gray-400 font-bold uppercase mb-1">Description</p>
+                                <p class="text-gray-300 italic">"${kev.shortDescription}"</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderBlock(data) {
+            const chartIdRadar = `radar-${data.cveId}`;
+            const chartIdEpss = `epss-${data.cveId}`;
+
+            // Unique ID generation to allow charting
+            setTimeout(() => {
+                createRadarChart(chartIdRadar, data.cvss.vectorData);
+                createEpssGauge(chartIdEpss, data.epss.score);
+            }, 100);
+
+            return `
+                <div class="card-panel rounded-3xl p-1 sm:p-8 mb-12 fade-in relative overflow-hidden group">
+                    <div class="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-transparent via-rimini-yellow to-transparent opacity-50"></div>
+                    
+                    <div class="flex flex-col md:flex-row justify-between items-baseline border-b border-gray-700 pb-6 mb-8 relative z-10 px-4 pt-4 sm:px-0 sm:pt-0">
+                        <h2 class="text-5xl font-black text-white tracking-tight">${data.cveId}</h2>
+                        <span class="mt-2 md:mt-0 px-4 py-1 rounded-full bg-slate-700 text-rimini-yellow font-mono text-sm border border-slate-600">
+                            ${data.cvss.vectorStr || 'Vector N/A'}
+                        </span>
+                    </div>
+
+                    <div class="grid grid-cols-12 gap-8 px-4 sm:px-0">
+                        
+                        ${renderKev(data.kev)}
+
+                        <div class="col-span-12 lg:col-span-4 flex flex-col gap-6">
+                            <div class="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 flex flex-col items-center justify-center relative min-h-[300px]">
+                                <h3 class="text-gray-400 uppercase text-xs font-bold tracking-widest absolute top-6 left-6">Probabilité d'Exploitation (EPSS)</h3>
+                                <div class="relative w-48 h-24 mt-8">
+                                    <canvas id="${chartIdEpss}"></canvas>
+                                    <div class="absolute bottom-0 left-0 w-full text-center -mb-2">
+                                        <span class="text-4xl font-bold text-white">${(data.epss.score * 100).toFixed(2)}%</span>
+                                    </div>
+                                </div>
+                                <p class="text-center text-sm text-gray-500 mt-6">
+                                    Plus élevé que ${(data.epss.percentile * 100).toFixed(0)}% des vulnérabilités.
+                                </p>
+                            </div>
+                        </div>
+
+                        <div class="col-span-12 lg:col-span-8">
+                            <div class="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 h-full relative min-h-[300px]">
+                                <h3 class="text-gray-400 uppercase text-xs font-bold tracking-widest absolute top-6 left-6 z-10">Profil de Risque (CVSS Structure)</h3>
+                                <div class="w-full h-[300px] flex items-center justify-center">
+                                    <canvas id="${chartIdRadar}"></canvas>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-span-12">
+                             <div class="bg-slate-900/50 p-8 rounded-2xl border border-slate-800">
+                                <h3 class="text-2xl font-bold text-white mb-4">Context & Impact</h3>
+                                <p class="text-lg text-gray-300 leading-relaxed mb-6">${data.description || 'Aucune description disponible.'}</p>
+                                
+                                <div class="flex items-center gap-3 mb-8">
+                                    <span class="px-3 py-1 bg-indigo-900 text-indigo-200 rounded text-xs font-bold uppercase border border-indigo-700">Type CWE</span>
+                                    <span class="text-white font-mono">${data.cwe}</span>
+                                </div>
+
+                                <h4 class="text-rimini-yellow font-bold uppercase text-sm mb-4 border-b border-gray-800 pb-2">Logiciels Affectés (Top 15)</h4>
+                                <div class="flex flex-wrap gap-2">
+                                    ${data.affected.length ? data.affected.map(a => `
+                                        <div class="bg-slate-800 hover:bg-slate-700 transition px-3 py-2 rounded border border-slate-700 flex items-center gap-2 text-sm text-gray-300">
+                                            <span class="text-white font-bold">${a.vendor} ${a.product}</span>
+                                            <span class="text-gray-500 text-xs bg-slate-900 px-1 rounded">${a.version}</span>
+                                        </div>
+                                    `).join('') : '<span class="text-gray-500 italic">Données CPE non structurées.</span>'}
+                                </div>
+                             </div>
+                        </div>
+
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- EVENTS ---
+        analyzeBtn.addEventListener('click', async () => {
+            const ids = cveInput.value.split(',').map(s => s.trim().toUpperCase()).filter(s => s.startsWith('CVE-'));
+            if(!ids.length) return alert("Entrez au moins un CVE valide.");
+
+            resultsContainer.classList.add('hidden');
+            loadingIndicator.classList.remove('hidden');
+            cveResultDiv.innerHTML = '';
+
+            const results = await Promise.all(ids.map(fetchVulnerabilityData));
+
+            loadingIndicator.classList.add('hidden');
+            resultsContainer.classList.remove('hidden');
+
+            cveResultDiv.innerHTML = results.map(r => r.error 
+                ? `<div class="p-6 bg-red-900/20 border border-red-500 rounded text-red-500 font-bold text-center">${r.cveId}: ${r.error}</div>`
+                : renderBlock(r)
+            ).join('');
+        });
+
+        pdfBtn.addEventListener('click', () => window.print());
+    </script>
+</body>
+</html>

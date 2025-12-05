@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Threat Analysis - Rimini Visualizer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels"></script> 
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+
+        :root {
+            --rimini-yellow: #FBE700;
+            --rimini-black: #0f172a;
+            --rimini-text: #E5E7EB;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--rimini-black);
+            color: var(--rimini-text);
+            min-height: 100vh;
+        }
+
+        /* Effets de carte "Glassmorphism" */
+        .card-panel {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .text-rimini-yellow { color: var(--rimini-yellow); }
+        .bg-rimini-yellow { background-color: var(--rimini-yellow); }
+
+        /* Animation d'apparition */
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .fade-in { animation: fadeIn 0.6s ease-out forwards; }
+    </style>
+</head>
+
+<body class="p-4 sm:p-8">
+
+    <header class="mb-10 no-print flex items-center justify-between">
+        <div>
+            <h1 class="text-4xl sm:text-5xl font-extrabold tracking-tight text-white mb-2">
+                Threat <span class="text-rimini-yellow">Risk Scatter</span>
+            </h1>
+            <p class="text-xl text-gray-400">CVSS vs. EPSS Vulnerability Analysis</p>
+        </div>
+        <a href="index.html" class="flex items-center gap-3 px-5 py-3 rounded-xl bg-slate-800 border border-slate-600 hover:border-rimini-yellow transition-all group text-decoration-none">
+            <div class="text-right hidden sm:block">
+                <p class="text-xs text-gray-400 uppercase font-bold">CVE Rimini Visualizer</p>
+                <p class="text-sm font-bold text-white">Rimini Dashboard</p>
+            </div>
+            <div class="bg-slate-700 p-2 rounded-lg group-hover:bg-rimini-yellow group-hover:text-black transition-colors">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+            </div>
+        </a>
+    </header>
+
+    <div class="no-print card-panel p-6 rounded-2xl shadow-xl mb-10 fade-in">
+        <h2 class="text-xl font-semibold mb-4 text-white">CVEs à Comparer</h2>
+        <div class="flex flex-col sm:flex-row gap-4">
+            <textarea id="cveInput" rows="3" placeholder="Entrez une liste de CVEs séparées par des virgules ou des retours à la ligne (Ex: CVE-2023-23397, CVE-2024-12345, ...)"
+                   class="flex-grow p-4 rounded-xl border border-gray-600 focus:border-rimini-yellow focus:ring-1 focus:ring-rimini-yellow bg-slate-800 text-white placeholder-gray-400 font-mono text-sm transition-all"></textarea>
+            <button id="analyzeBtn"
+                    class="bg-rimini-yellow text-slate-900 font-bold py-3 px-8 rounded-xl transition hover:bg-yellow-400 hover:shadow-[0_0_20px_rgba(251,231,0,0.3)] active:scale-95 text-lg h-full sm:h-auto">
+                Analyser
+            </button>
+        </div>
+    </div>
+
+    <div id="loadingIndicator" class="text-center mb-10 hidden">
+        <div class="relative w-16 h-16 mx-auto">
+            <div class="absolute inset-0 rounded-full border-4 border-slate-700"></div>
+            <div class="absolute inset-0 rounded-full border-4 border-rimini-yellow border-t-transparent animate-spin"></div>
+        </div>
+        <p class="mt-4 text-gray-400 animate-pulse">Récupération des données CVSS et EPSS...</p>
+    </div>
+
+    <div id="resultsContainer" class="hidden fade-in">
+        <div class="card-panel p-6 sm:p-8 rounded-2xl shadow-xl">
+            <h2 class="text-2xl font-bold text-white mb-6 border-b border-gray-700 pb-3">Carte de Priorité de la Menace</h2>
+            <div class="h-[600px] w-full relative">
+                <canvas id="scatterChart"></canvas>
+            </div>
+        </div>
+        
+        <h3 class="text-xl font-bold text-white mt-10 mb-4">Détails des CVEs</h3>
+        <div id="dataTable" class="overflow-x-auto card-panel p-4 rounded-xl">
+            </div>
+    </div>
+
+    <div id="errorContainer" class="hidden p-6 bg-red-900/20 border border-red-500 rounded-xl text-red-300 text-center font-bold"></div>
+
+    <script type="module">
+        // --- CONFIG ---
+        const cveInput = document.getElementById('cveInput');
+        const analyzeBtn = document.getElementById('analyzeBtn');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const resultsContainer = document.getElementById('resultsContainer');
+        const errorContainer = document.getElementById('errorContainer');
+        const dataTableDiv = document.getElementById('dataTable');
+
+        let chartInstance = null;
+        
+        // --- API HELPERS ---
+        async function retryFetch(url, retries = 2) {
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const res = await fetch(url);
+                    if (res.status === 404) return null;
+                    if (!res.ok) throw new Error(res.status);
+                    return await res.json();
+                } catch (e) {
+                    if (i === retries - 1) throw new Error(`Échec de la récupération des données NVD pour l'une des CVEs après ${retries} tentatives.`);
+                    await new Promise(r => setTimeout(r, 800));
+                }
+            }
+        }
+        
+        async function fetchVulnerabilityData(cveId) {
+            const [nvd, epssData] = await Promise.all([
+                retryFetch(`https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=${cveId}`),
+                // L'API EPSS est rapide et n'a pas besoin de retryFetch, mais on la laisse simple.
+                fetch(`https://api.first.org/data/v1/epss?cve=${cveId}`).then(res => res.json()).catch(() => ({}))
+            ]);
+
+            if (!nvd?.vulnerabilities?.length) return { cveId, error: "Introuvable dans NVD" };
+
+            const item = nvd.vulnerabilities[0];
+            const metrics = item.cve.metrics?.cvssMetricV31?.[0] || item.cve.metrics?.cvssMetricV30?.[0];
+            
+            // EPSS score est un nombre entre 0 et 1.
+            const epssScore = parseFloat(epssData?.data?.[0]?.epss || 0);
+            
+            return {
+                cveId,
+                cvssScore: metrics?.cvssData?.baseScore || 0,
+                epssScore: epssScore,
+                description: item.cve.descriptions.find(d => d.lang === 'en')?.value || 'N/A',
+                isKev: !!item.cve.cisaExploitAdd,
+                vectorStr: metrics?.cvssData?.vectorString || 'N/A',
+            };
+        }
+
+        // --- CHARTING FUNCTION ---
+        function createScatterChart(data) {
+            if (chartInstance) chartInstance.destroy();
+
+            // Création des datasets
+            const datasets = data.map(item => {
+                let color = 'rgba(255, 255, 255, 0.8)';
+                let radius = 6;
+                let borderColor = '#0F172A';
+
+                // Priorité haute (Critique/Exploité) : Grand point rouge/jaune
+                if (item.isKev) {
+                    color = '#DC2626'; // Red
+                    radius = 10;
+                    borderColor = '#FBE700';
+                } else if (item.cvssScore >= 7.0 && item.epssScore > 0.1) {
+                    color = '#F59E0B'; // Amber/Orange
+                    radius = 8;
+                } else if (item.cvssScore >= 7.0) {
+                    color = '#007FFF'; // Blue (High severity, Low risk)
+                }
+
+                return {
+                    label: item.cveId,
+                    data: [{ x: item.cvssScore, y: item.epssScore }],
+                    backgroundColor: color,
+                    borderColor: borderColor,
+                    borderWidth: 2,
+                    pointRadius: radius,
+                    pointHoverRadius: radius + 2,
+                    pointStyle: 'circle'
+                };
+            });
+
+            const ctx = document.getElementById('scatterChart').getContext('2d');
+            
+            chartInstance = new Chart(ctx, {
+                type: 'scatter',
+                data: { datasets: datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    // Configuration des axes
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            position: 'bottom',
+                            min: 0, max: 10,
+                            title: { display: true, text: 'CVSS Base Score (Gravité Théorique)', color: '#E5E7EB', font: { size: 16 } },
+                            grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                            ticks: { color: '#94a3b8' }
+                        },
+                        y: {
+                            type: 'linear',
+                            min: 0, max: 1,
+                            title: { display: true, text: 'EPSS Score (Probabilité d\'Exploitation Actuelle)', color: '#E5E7EB', font: { size: 16 } },
+                            grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                            ticks: { color: '#94a3b8', callback: function(value) { return (value * 100).toFixed(0) + '%'; } }
+                        }
+                    },
+                    // Tooltip personnalisé pour l'info
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const item = data.find(d => d.cveId === context.dataset.label);
+                                    let label = item.cveId || '';
+                                    if (item.isKev) label += ' (KEV/Exploité !) ';
+                                    label += ` | CVSS: ${item.cvssScore} | EPSS: ${(item.epssScore * 100).toFixed(2)}%`;
+                                    return label;
+                                },
+                                afterLabel: function(context) {
+                                    const item = data.find(d => d.cveId === context.dataset.label);
+                                    return item.vectorStr;
+                                }
+                            },
+                            backgroundColor: 'rgba(30, 41, 59, 0.9)',
+                            titleColor: '#FBE700',
+                            bodyColor: '#E5E7EB',
+                            borderColor: '#FBE700',
+                            borderWidth: 1,
+                        },
+                        // Notes visuelles pour les quadrants
+                        annotation: {
+                            annotations: [{
+                                type: 'box', yMin: 0.1, yMax: 1, xMin: 7, xMax: 10,
+                                backgroundColor: 'rgba(255, 99, 132, 0.15)', borderWidth: 0,
+                                label: { content: 'PRIORITÉ MAX', color: '#FBE700', fontSize: 18, position: 'start', xAdjust: 5, yAdjust: -10 }
+                            }]
+                        }
+                    }
+                }
+            });
+        }
+
+        // --- TABLE RENDERING ---
+        function renderTable(data) {
+            let tableHTML = `
+                <table class="min-w-full divide-y divide-gray-700">
+                    <thead class="bg-slate-700/50">
+                        <tr>
+                            <th scope="col" class="py-3.5 px-3 text-left text-sm font-semibold text-rimini-yellow">CVE ID</th>
+                            <th scope="col" class="py-3.5 px-3 text-left text-sm font-semibold text-rimini-yellow">CVSS Score (Gravité)</th>
+                            <th scope="col" class="py-3.5 px-3 text-left text-sm font-semibold text-rimini-yellow">EPSS (Exploit Prob.)</th>
+                            <th scope="col" class="py-3.5 px-3 text-left text-sm font-semibold text-rimini-yellow">Exploité (KEV)</th>
+                            <th scope="col" class="py-3.5 px-3 text-left text-sm font-semibold text-rimini-yellow">Description</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-800">
+            `;
+
+            data.sort((a, b) => b.cvssScore - a.cvssScore);
+
+            data.forEach(item => {
+                const epss = (item.epssScore * 100).toFixed(2) + '%';
+                const isKevBadge = item.isKev 
+                    ? '<span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-800 text-red-300 border border-red-500">OUI</span>' 
+                    : '<span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-slate-700 text-gray-400">NON</span>';
+
+                tableHTML += `
+                    <tr>
+                        <td class="whitespace-nowrap py-4 px-3 text-sm font-mono text-rimini-yellow">${item.cveId}</td>
+                        <td class="whitespace-nowrap py-4 px-3 text-sm font-bold text-white">${item.cvssScore}</td>
+                        <td class="whitespace-nowrap py-4 px-3 text-sm font-bold text-blue-300">${epss}</td>
+                        <td class="whitespace-nowrap py-4 px-3 text-sm">${isKevBadge}</td>
+                        <td class="py-4 px-3 text-sm text-gray-300 max-w-xs truncate" title="${item.description}">${item.description}</td>
+                    </tr>
+                `;
+            });
+
+            tableHTML += '</tbody></table>';
+            dataTableDiv.innerHTML = tableHTML;
+        }
+
+        // --- EVENTS ---
+        analyzeBtn.addEventListener('click', async () => {
+            const input = cveInput.value.replace(/[\s,]+/g, ',').toUpperCase();
+            const ids = input.split(',').filter(s => s.startsWith('CVE-') && s.length > 0);
+
+            if(!ids.length) {
+                errorContainer.classList.remove('hidden');
+                errorContainer.innerText = "Entrez au moins un CVE valide (Ex: CVE-2023-12345).";
+                resultsContainer.classList.add('hidden');
+                return;
+            }
+
+            errorContainer.classList.add('hidden');
+            resultsContainer.classList.add('hidden');
+            loadingIndicator.classList.remove('hidden');
+
+            try {
+                // Utiliser Promise.all pour lancer les requêtes en parallèle (rapide)
+                const results = await Promise.all(ids.map(fetchVulnerabilityData));
+                
+                // Filtrer les erreurs et les CVEs non trouvées
+                const validData = results.filter(r => !r.error);
+                const errors = results.filter(r => r.error);
+
+                if (validData.length === 0) {
+                    throw new Error("Aucune donnée valide n'a pu être récupérée pour les CVEs soumises.");
+                }
+
+                // Créer le graphique et le tableau
+                createScatterChart(validData);
+                renderTable(validData);
+
+                loadingIndicator.classList.add('hidden');
+                resultsContainer.classList.remove('hidden');
+
+                if (errors.length > 0) {
+                    errorContainer.classList.remove('hidden');
+                    errorContainer.innerText = `Attention : ${errors.length} CVE(s) non trouvée(s) ou en erreur. Vérifiez les IDs suivants: ${errors.map(e => e.cveId).join(', ')}.`;
+                }
+
+            } catch (e) {
+                loadingIndicator.classList.add('hidden');
+                errorContainer.classList.remove('hidden');
+                errorContainer.innerText = `Erreur critique lors de l'analyse : ${e.message}`;
+            }
+        });
+    </script>
+</body>
+</html>
