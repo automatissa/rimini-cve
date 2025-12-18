@@ -13,7 +13,7 @@ This repository contains a small static site for viewing CVE/Threat-Risk visuali
 - **`README.md`**: This file (usage instructions).
 
 
-# Quick start:
+**Quick start**
 
 
 - Clone the repo:
@@ -33,3 +33,6 @@ That's it — no other setup needed.
 
 **License**
 - See the [LICENSE](LICENSE) file for license details.
+
+
+Build with 💛 and AI 🤖
